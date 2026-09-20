@@ -1,4 +1,4 @@
-# AI Knowledge Workspace
+﻿# AI Knowledge Workspace
 
 > Turn your PDF documents into a private, searchable knowledge layer.
 
