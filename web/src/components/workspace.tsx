@@ -1,7 +1,6 @@
 "use client";
 import {useEffect,useMemo,useRef,useState} from "react";
 import {supabaseBrowser} from "../lib/supabase";
-import {createHash} from "crypto";
 
 type Doc={id:string;filename:string;status:string;created_at:string};
 type Msg={role:"user"|"ai";text:string;sources?:{page:number|null;text:string;score:number}[]};
