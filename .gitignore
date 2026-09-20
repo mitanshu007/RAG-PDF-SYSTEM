@@ -1,0 +1,25 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv*/
+
+# Local configuration and generated vector database data
+.env
+.env.*
+!.env.example
+qdrant_storage/
+data/
+*.pdf
+
+# Local frontend/runtime files
+.streamlit/secrets.toml
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.DS_Store

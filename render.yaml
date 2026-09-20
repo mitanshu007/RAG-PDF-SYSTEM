@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: ai-knowledge-workspace-api
+    runtime: python
+    buildCommand: pip install uv && uv sync --frozen
+    startCommand: uv run uvicorn reg.app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    envVars:
+      - key: INNGEST_ENV
+        value: production
+      - key: HOST
+        value: 0.0.0.0
+      - key: CORS_ORIGINS
+        sync: false
+      - key: INNGEST_EVENT_API_BASE_URL
+        sync: false
+      - key: INNGEST_SERVE_ORIGIN
+        sync: false
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: LLM_MODEL
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_BASE_URL
+        sync: false
+      - key: ENABLE_OPENAI
+        value: "false"

@@ -1,0 +1,29 @@
+[project]
+name = "reg"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "mitanshu007", email = "mitanshushah2007@gmail.com" }
+]
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.141.1",
+    "inngest>=0.5.19",
+    "llama-index-core>=0.14.24",
+    "llama-index-readers-file>=0.7.0",
+    "openai>=3.16.2",
+    "python-multipart>=0.0.20",
+    "python-dotenv>=1.2.3",
+    "qdrant-client>=1.19.1",
+    "sentence-transformers>=5.1.2",
+    "streamlit>=1.64.0",
+    "uvicorn>=0.53.0",
+]
+
+[project.scripts]
+reg = "reg:main"
+
+[build-system]
+requires = ["uv_build>=0.12.17,<0.13.0"]
+build-backend = "uv_build"
