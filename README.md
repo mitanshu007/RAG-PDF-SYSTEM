@@ -346,12 +346,16 @@ Event name: rag/query
 ```json
 {
   "question": "What are the six WHO health system building blocks?",
+  "document_id": "<uploaded-document-id>",
   "top_k": 5
 }
 ```
 
 The Nexa frontend submits the equivalent event to the local event API and
 polls `/v0/gql` for the completed `RAG: Query` function output.
+Queries are rejected unless the selected document has completed ingestion.
+Qdrant applies a `document_id` payload filter before similarity search, so
+chunks from other uploaded PDFs cannot enter the answer context.
 
 ## Inngest Functions
 

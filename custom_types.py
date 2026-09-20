@@ -1,7 +1,10 @@
 import pydantic
 class RAGChunkAndSrc(pydantic.BaseModel):
     chunks: list[str]
-    source_id: str = None
+    source_id: str | None = None
+    document_id: str
+    filename: str
+    page_numbers: list[int]
 
 class RAGUpsertResult(pydantic.BaseModel):
     ingested: int

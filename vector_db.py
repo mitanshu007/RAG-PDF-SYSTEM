@@ -1,7 +1,14 @@
 import os
 
 from qdrant_client import QdrantClient
-from qdrant_client.http.models import VectorParams, Distance, PointStruct
+from qdrant_client.http.models import (
+    Distance,
+    FieldCondition,
+    Filter,
+    MatchValue,
+    PointStruct,
+    VectorParams,
+)
 
 
 class QdrantStore:
@@ -35,12 +42,21 @@ class QdrantStore:
         ]
         self.client.upsert(self.collection, points=points)
 
-    def search(self, query_vector, top_k: int = 5):
+    def search(self, query_vector, document_id: str, top_k: int = 5):
+        query_filter = Filter(
+            must=[
+                FieldCondition(
+                    key="document_id",
+                    match=MatchValue(value=document_id),
+                )
+            ]
+        )
         if hasattr(self.client, "query_points"):
             res = self.client.query_points(
                 collection_name=self.collection,
                 query=query_vector,
                 limit=top_k,
+                query_filter=query_filter,
             )
             result = res.points
         else:
@@ -48,6 +64,7 @@ class QdrantStore:
                 collection_name=self.collection,
                 query_vector=query_vector,
                 limit=top_k,
+                query_filter=query_filter,
             )
 
         content = []

@@ -5,7 +5,7 @@ import os
 import re
 from pathlib import Path
 from uuid import NAMESPACE_URL, uuid4, uuid5
-from data_loader import load_and_chunk_pdf, embed_texts
+from data_loader import embed_texts, load_and_chunk_pdf_with_metadata
 from vector_db import QdrantStore
 from custom_types import RAQQueryResult, RAGSearchResult, RAGUpsertResult, RAGChunkAndSrc
 
@@ -21,6 +21,7 @@ from inngest.experimental import ai
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+document_statuses: dict[str, dict[str, str]] = {}
 
 inngest_client = inngest.Inngest(
     app_id="rag_app",
@@ -43,17 +44,40 @@ async def ingest_pdf(ctx: inngest.Context) -> dict[str, object]:
         if not os.path.isfile(pdf_path):
             raise FileNotFoundError(f"PDF file not found: {pdf_path}")
 
-        source_id = ctx.event.data.get("source_id", pdf_path)
-        chunks = load_and_chunk_pdf(pdf_path)
-        return RAGChunkAndSrc(chunks=chunks, source_id=source_id)
+        document_id = str(ctx.event.data["document_id"])
+        filename = str(ctx.event.data["filename"])
+        chunk_data = load_and_chunk_pdf_with_metadata(pdf_path)
+        document_statuses[document_id] = {"filename": filename, "status": "processing"}
+        return RAGChunkAndSrc(
+            chunks=[str(item["text"]) for item in chunk_data],
+            source_id=filename,
+            document_id=document_id,
+            filename=filename,
+            page_numbers=[int(item["page_number"]) for item in chunk_data],
+        )
 
     def _upsert(chunks_and_src: RAGChunkAndSrc) -> RAGUpsertResult:
         chunks = chunks_and_src.chunks
         source_id = chunks_and_src.source_id
+        document_id = chunks_and_src.document_id
         vecs = embed_texts(chunks)
-        ids = [str(uuid5(NAMESPACE_URL, f"{source_id}:{i}")) for i in range(len(chunks))]
-        payloads = [{"source": source_id, "text": chunks[i]} for i in range(len(chunks))]
+        ids = [str(uuid5(NAMESPACE_URL, f"{document_id}:{i}")) for i in range(len(chunks))]
+        payloads = [
+            {
+                "source": source_id,
+                "filename": chunks_and_src.filename,
+                "document_id": document_id,
+                "page_number": chunks_and_src.page_numbers[i],
+                "chunk_id": ids[i],
+                "text": chunks[i],
+            }
+            for i in range(len(chunks))
+        ]
         QdrantStore().upsert(ids, vecs, payloads)
+        document_statuses[document_id] = {
+            "filename": chunks_and_src.filename,
+            "status": "ready",
+        }
         return RAGUpsertResult(ingested=len(chunks))
 
     chunk_and_src = await ctx.step.run(
@@ -74,18 +98,35 @@ async def ingest_pdf(ctx: inngest.Context) -> dict[str, object]:
 async def rag_query(ctx: inngest.Context) -> dict[str, object]:
     """Search indexed chunks and generate an answer grounded in that context."""
     question = str(ctx.event.data.get("question", "")).strip()
+    document_id = str(ctx.event.data.get("document_id", "")).strip()
+    response_style = str(
+        ctx.event.data.get("response_style", "Grounded and concise")
+    ).strip()
     if not question:
         raise ValueError("The query event requires a non-empty 'question'.")
+    if not document_id:
+        raise ValueError("document_id is required. Please upload and select a PDF first.")
+    document = document_statuses.get(document_id)
+    if document is None:
+        raise ValueError("Document not found. Please upload the PDF again.")
+    if document.get("status") != "ready":
+        raise ValueError("Document is still being processed.")
 
     top_k = int(ctx.event.data.get("top_k", 5))
 
     def _search() -> RAGSearchResult:
         query_vector = embed_texts([question])[0]
-        return RAGSearchResult(**QdrantStore().search(query_vector, top_k))
+        return RAGSearchResult(**QdrantStore().search(query_vector, document_id, top_k))
 
     found = await ctx.step.run(
         "embed-and-search", _search, output_type=RAGSearchResult
     )
+    if not found.content:
+        return RAQQueryResult(
+            answer="I couldn't find this information in the uploaded PDF.",
+            sources=[],
+            num_contexts=0,
+        ).model_dump()
     context_block = "\n\n".join(found.content)
     user_context = f"Question: {question}\n\nContext:\n{context_block}"
     groq_api_key = os.getenv("GROQ_API_KEY", "").strip()
@@ -125,8 +166,12 @@ async def rag_query(ctx: inngest.Context) -> dict[str, object]:
                     {
                         "role": "system",
                         "content": (
-                            "Answer questions using only the provided context. "
-                            "If the answer is not in the context, say 'I don't know'."
+                            "You are a document-grounded AI assistant. Answer only "
+                            "using the provided context from the currently selected PDF. "
+                            "Do not use other documents, previous chats, or general "
+                            "knowledge. If the answer is not present, respond exactly: "
+                            "\"I couldn't find this information in the uploaded PDF.\""
+                            f" Use a {response_style.lower()} response style."
                         ),
                     },
                     {"role": "user", "content": user_context},
@@ -138,7 +183,7 @@ async def rag_query(ctx: inngest.Context) -> dict[str, object]:
         # Free local synthesis from retrieved context without external paid API
         def _synthesize() -> str:
             if not found.content:
-                return "I don't know. No relevant context found in indexed documents."
+                return "I couldn't find this information in the uploaded PDF."
             summary = "\n\n".join(f"- {c.strip()}" for c in found.content)
             return f"Answer grounded in retrieved context:\n\n{summary}"
 
@@ -178,6 +223,14 @@ async def healthz() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/documents/{document_id}")
+async def get_document_status(document_id: str) -> dict[str, str]:
+    document = document_statuses.get(document_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found. Please upload the PDF again.")
+    return {"document_id": document_id, **document}
+
+
 @app.post("/ingest-pdf", status_code=status.HTTP_202_ACCEPTED)
 async def start_pdf_ingestion(
     filename: str = Query(default="example.pdf", min_length=1),
@@ -190,9 +243,16 @@ async def start_pdf_ingestion(
             detail="Filename must be a non-empty string.",
         )
 
+    document_id = str(uuid4())
+    document_statuses[document_id] = {"filename": Path(cleaned_filename).name, "status": "queued"}
     event = inngest.Event(
         name="rag/ingest_pdf",
-        data={"pdf_path": cleaned_filename, "request_id": str(uuid4())},
+        data={
+            "pdf_path": cleaned_filename,
+            "request_id": str(uuid4()),
+            "document_id": document_id,
+            "filename": Path(cleaned_filename).name,
+        },
     )
 
     try:
@@ -204,7 +264,13 @@ async def start_pdf_ingestion(
             detail="The ingestion event service is unavailable.",
         ) from exc
 
-    return {"event_ids": event_ids, "message": "PDF ingestion started"}
+    return {
+        "event_ids": event_ids,
+        "document_id": document_id,
+        "filename": Path(cleaned_filename).name,
+        "status": "queued",
+        "message": "PDF ingestion started",
+    }
 
 
 @app.post("/upload-pdf", status_code=status.HTTP_202_ACCEPTED)
@@ -222,10 +288,17 @@ async def upload_pdf(file: UploadFile = File(...)) -> dict[str, object]:
     saved_path = upload_dir / f"{uuid4()}-{safe_name}"
     try:
         saved_path.write_bytes(await file.read())
+        document_id = str(uuid4())
+        document_statuses[document_id] = {"filename": file.filename, "status": "queued"}
         event_ids = await inngest_client.send(
             inngest.Event(
                 name="rag/ingest_pdf",
-                data={"pdf_path": str(saved_path), "source_id": file.filename},
+                data={
+                    "pdf_path": str(saved_path),
+                    "source_id": file.filename,
+                    "document_id": document_id,
+                    "filename": file.filename,
+                },
             )
         )
     except Exception as exc:
@@ -236,7 +309,13 @@ async def upload_pdf(file: UploadFile = File(...)) -> dict[str, object]:
             detail="The ingestion event service is unavailable.",
         ) from exc
 
-    return {"event_ids": event_ids, "message": "PDF ingestion started"}
+    return {
+        "event_ids": event_ids,
+        "document_id": document_id,
+        "filename": file.filename,
+        "status": "queued",
+        "message": "PDF ingestion started",
+    }
 
 
 inngest.fast_api.serve(app, inngest_client, [ingest_pdf, rag_query])

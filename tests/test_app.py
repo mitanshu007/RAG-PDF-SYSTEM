@@ -36,3 +36,20 @@ class IngestionEndpointTests(unittest.TestCase):
             response.json(),
             {"detail": "The ingestion event service is unavailable."},
         )
+
+    def test_upload_returns_document_identity(self) -> None:
+        with patch.object(
+            app_module.inngest_client,
+            "send",
+            AsyncMock(return_value=["event-1"]),
+        ):
+            response = self.client.post(
+                "/upload-pdf",
+                files={"file": ("notes.pdf", b"%PDF-1.4 test", "application/pdf")},
+            )
+
+        self.assertEqual(response.status_code, 202)
+        body = response.json()
+        self.assertTrue(body["document_id"])
+        self.assertEqual(body["filename"], "notes.pdf")
+        self.assertEqual(body["status"], "queued")

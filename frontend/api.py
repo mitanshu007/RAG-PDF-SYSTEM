@@ -27,6 +27,14 @@ class QueryResult:
     num_contexts: int
 
 
+@dataclass
+class IngestionResult:
+    event_ids: list[str]
+    document_id: str
+    filename: str
+    status: str
+
+
 def _request(url: str, *, method: str = "GET", payload: object | None = None, parse_json: bool = True) -> dict:
     body = None
     headers = {"Accept": "application/json"}
@@ -55,7 +63,7 @@ def queue_ingestion(path: Path) -> list[str]:
     return [str(event_id) for event_id in response.get("event_ids", [])]
 
 
-def upload_ingestion(path: Path, filename: str) -> list[str]:
+def upload_ingestion(path: Path, filename: str) -> IngestionResult:
     boundary = "----NexaUploadBoundary"
     content = path.read_bytes()
     multipart = (
@@ -77,14 +85,39 @@ def upload_ingestion(path: Path, filename: str) -> list[str]:
             result = json.loads(response.read().decode("utf-8"))
     except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
         raise ApiError(f"Unable to upload PDF: {exc}") from exc
-    return [str(event_id) for event_id in result.get("event_ids", [])]
+    return IngestionResult(
+        event_ids=[str(event_id) for event_id in result.get("event_ids", [])],
+        document_id=str(result["document_id"]),
+        filename=str(result.get("filename", filename)),
+        status=str(result.get("status", "queued")),
+    )
 
 
-def queue_query(question: str, top_k: int = 5) -> str:
+def get_document_status(document_id: str) -> dict[str, str]:
+    return {
+        key: str(value)
+        for key, value in _request(f"{API_URL}/documents/{document_id}").items()
+    }
+
+
+def queue_query(
+    question: str,
+    document_id: str,
+    top_k: int = 5,
+    response_style: str = "Grounded and concise",
+) -> str:
     response = _request(
         f"{INNGEST_URL}/e/{EVENT_KEY}",
         method="POST",
-        payload=[{"name": "rag/query", "data": {"question": question, "top_k": top_k}}],
+        payload=[{
+            "name": "rag/query",
+            "data": {
+                "question": question,
+                "document_id": document_id,
+                "top_k": top_k,
+                "response_style": response_style,
+            },
+        }],
     )
     ids = response.get("ids", [])
     if not ids:
