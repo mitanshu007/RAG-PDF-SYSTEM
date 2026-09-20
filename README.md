@@ -436,10 +436,9 @@ In Inngest Cloud, register the FastAPI SDK endpoint at:
 https://<render-service-domain>/api/inngest
 ```
 
-The deployment is not complete until `/healthz`, `/api/inngest`, PDF upload,
-Inngest ingestion, Qdrant retrieval, and a real question have all been
-verified. The service has no authentication layer, so add authentication and
-rate limiting before exposing sensitive documents publicly.
+The deployment is not complete until `/healthz`, `/api/inngest`, authenticated
+PDF upload, Inngest ingestion, Qdrant retrieval, and a real question have all
+been verified. Add rate limiting before exposing the service publicly.
 
 ## Troubleshooting
 
@@ -488,6 +487,22 @@ The current local embedding model produces 384-dimensional vectors. The
 collection if it does not match. Re-ingest documents after a collection
 recreation.
 
+## Supabase authentication and persistence
+
+This deployment uses Supabase Auth for Google/GitHub OAuth and Supabase
+Postgres for profiles, document ownership, and user settings. Run
+[`supabase_schema.sql`](./supabase_schema.sql) in the Supabase SQL editor before
+starting the application.
+
+Configure `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, and
+`SUPABASE_REDIRECT_URL` from `.env.example`. The service-role key is backend
+only and must never be placed in Streamlit secrets or browser-visible code.
+
+In Supabase Auth, enable Google and GitHub providers and add the redirect URL
+to the project's URL allow-list. The frontend redirects to Supabase OAuth and
+passes the resulting access token to FastAPI; FastAPI verifies it before
+handling uploads, document status, settings, and queries.
+
 ## Security and Privacy
 
 - Keep `.env` out of version control.
@@ -496,8 +511,8 @@ recreation.
 - The local embedding path does not send document text to an embedding API.
 - If Groq or OpenAI is configured, retrieved context may be sent to that
   provider for answer generation.
-- The current local development API does not implement authentication or
-  authorization. Add an authentication layer before exposing it publicly.
+- FastAPI requires a verified Supabase bearer token for protected operations.
+- Qdrant retrieval filters by both `user_id` and `document_id`.
 
 ## License
 

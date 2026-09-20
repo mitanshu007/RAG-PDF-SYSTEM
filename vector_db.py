@@ -42,9 +42,13 @@ class QdrantStore:
         ]
         self.client.upsert(self.collection, points=points)
 
-    def search(self, query_vector, document_id: str, top_k: int = 5):
+    def search(self, query_vector, user_id: str, document_id: str, top_k: int = 5):
         query_filter = Filter(
             must=[
+                FieldCondition(
+                    key="user_id",
+                    match=MatchValue(value=user_id),
+                ),
                 FieldCondition(
                     key="document_id",
                     match=MatchValue(value=document_id),

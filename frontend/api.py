@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import os
@@ -14,6 +14,14 @@ API_URL = os.getenv("RAG_API_URL", "http://localhost:8000").rstrip("/")
 INNGEST_URL = os.getenv("INNGEST_URL", "http://localhost:8288").rstrip("/")
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333").rstrip("/")
 EVENT_KEY = os.getenv("INNGEST_EVENT_KEY", "NO_EVENT_KEY_SET")
+
+
+def set_access_token(token: str | None) -> None:
+    global ACCESS_TOKEN
+    ACCESS_TOKEN = token
+
+
+ACCESS_TOKEN: str | None = None
 
 
 class ApiError(RuntimeError):
@@ -38,6 +46,8 @@ class IngestionResult:
 def _request(url: str, *, method: str = "GET", payload: object | None = None, parse_json: bool = True) -> dict:
     body = None
     headers = {"Accept": "application/json"}
+    if ACCESS_TOKEN:
+        headers["Authorization"] = "Bearer " + ACCESS_TOKEN
     if payload is not None:
         body = json.dumps(payload).encode("utf-8")
         headers["Content-Type"] = "application/json"
@@ -80,6 +90,8 @@ def upload_ingestion(path: Path, filename: str) -> IngestionResult:
         },
         method="POST",
     )
+    if ACCESS_TOKEN:
+        request.add_header("Authorization", "Bearer " + ACCESS_TOKEN)
     try:
         with urlopen(request, timeout=60) as response:
             result = json.loads(response.read().decode("utf-8"))
@@ -100,6 +112,14 @@ def get_document_status(document_id: str) -> dict[str, str]:
     }
 
 
+def get_settings() -> dict[str, object]:
+    return _request(f"{API_URL}/settings").get("settings", {})
+
+
+def save_settings(settings: dict[str, object]) -> None:
+    _request(f"{API_URL}/settings", method="PUT", payload=settings)
+
+
 def queue_query(
     question: str,
     document_id: str,
@@ -107,19 +127,16 @@ def queue_query(
     response_style: str = "Grounded and concise",
 ) -> str:
     response = _request(
-        f"{INNGEST_URL}/e/{EVENT_KEY}",
+        f"{API_URL}/query",
         method="POST",
-        payload=[{
-            "name": "rag/query",
-            "data": {
-                "question": question,
-                "document_id": document_id,
-                "top_k": top_k,
-                "response_style": response_style,
-            },
-        }],
+        payload={
+            "question": question,
+            "document_id": document_id,
+            "top_k": top_k,
+            "response_style": response_style,
+        },
     )
-    ids = response.get("ids", [])
+    ids = response.get("event_ids", [])
     if not ids:
         raise ApiError("Inngest did not return a query event ID.")
     return str(ids[0])
@@ -196,7 +213,7 @@ def check_services() -> dict[str, bool]:
 
 def get_collection_stats() -> int | None:
     try:
-        response =         _request(f"{QDRANT_URL}/collections/docs")
+        response = _request(f"{QDRANT_URL}/collections/docs")
     except ApiError:
         return None
     result = response.get("result") or {}

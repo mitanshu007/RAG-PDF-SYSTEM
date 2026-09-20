@@ -8,12 +8,14 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 from data_loader import embed_texts, load_and_chunk_pdf_with_metadata
 from vector_db import QdrantStore
 from custom_types import RAQQueryResult, RAGSearchResult, RAGUpsertResult, RAGChunkAndSrc
+from auth import AuthenticatedUser, get_current_user
+from persistence import create_document, ensure_user, get_document, load_settings, save_settings, update_document
 
 import inngest
 import inngest.fast_api
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile, status
+from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from inngest.experimental import ai
@@ -21,8 +23,6 @@ from inngest.experimental import ai
 load_dotenv()
 
 logger = logging.getLogger(__name__)
-document_statuses: dict[str, dict[str, str]] = {}
-
 inngest_client = inngest.Inngest(
     app_id="rag_app",
     logger=logger,
@@ -45,13 +45,15 @@ async def ingest_pdf(ctx: inngest.Context) -> dict[str, object]:
             raise FileNotFoundError(f"PDF file not found: {pdf_path}")
 
         document_id = str(ctx.event.data["document_id"])
+        user_id = str(ctx.event.data["user_id"])
         filename = str(ctx.event.data["filename"])
         chunk_data = load_and_chunk_pdf_with_metadata(pdf_path)
-        document_statuses[document_id] = {"filename": filename, "status": "processing"}
+        update_document(document_id, user_id, "processing")
         return RAGChunkAndSrc(
             chunks=[str(item["text"]) for item in chunk_data],
             source_id=filename,
             document_id=document_id,
+            user_id=user_id,
             filename=filename,
             page_numbers=[int(item["page_number"]) for item in chunk_data],
         )
@@ -60,6 +62,7 @@ async def ingest_pdf(ctx: inngest.Context) -> dict[str, object]:
         chunks = chunks_and_src.chunks
         source_id = chunks_and_src.source_id
         document_id = chunks_and_src.document_id
+        user_id = chunks_and_src.user_id
         vecs = embed_texts(chunks)
         ids = [str(uuid5(NAMESPACE_URL, f"{document_id}:{i}")) for i in range(len(chunks))]
         payloads = [
@@ -67,6 +70,7 @@ async def ingest_pdf(ctx: inngest.Context) -> dict[str, object]:
                 "source": source_id,
                 "filename": chunks_and_src.filename,
                 "document_id": document_id,
+                "user_id": user_id,
                 "page_number": chunks_and_src.page_numbers[i],
                 "chunk_id": ids[i],
                 "text": chunks[i],
@@ -74,10 +78,7 @@ async def ingest_pdf(ctx: inngest.Context) -> dict[str, object]:
             for i in range(len(chunks))
         ]
         QdrantStore().upsert(ids, vecs, payloads)
-        document_statuses[document_id] = {
-            "filename": chunks_and_src.filename,
-            "status": "ready",
-        }
+        update_document(document_id, user_id, "ready")
         return RAGUpsertResult(ingested=len(chunks))
 
     chunk_and_src = await ctx.step.run(
@@ -99,6 +100,7 @@ async def rag_query(ctx: inngest.Context) -> dict[str, object]:
     """Search indexed chunks and generate an answer grounded in that context."""
     question = str(ctx.event.data.get("question", "")).strip()
     document_id = str(ctx.event.data.get("document_id", "")).strip()
+    user_id = str(ctx.event.data.get("user_id", "")).strip()
     response_style = str(
         ctx.event.data.get("response_style", "Grounded and concise")
     ).strip()
@@ -106,7 +108,9 @@ async def rag_query(ctx: inngest.Context) -> dict[str, object]:
         raise ValueError("The query event requires a non-empty 'question'.")
     if not document_id:
         raise ValueError("document_id is required. Please upload and select a PDF first.")
-    document = document_statuses.get(document_id)
+    if not user_id:
+        raise ValueError("user_id is required.")
+    document = get_document(document_id, user_id)
     if document is None:
         raise ValueError("Document not found. Please upload the PDF again.")
     if document.get("status") != "ready":
@@ -116,7 +120,7 @@ async def rag_query(ctx: inngest.Context) -> dict[str, object]:
 
     def _search() -> RAGSearchResult:
         query_vector = embed_texts([question])[0]
-        return RAGSearchResult(**QdrantStore().search(query_vector, document_id, top_k))
+        return RAGSearchResult(**QdrantStore().search(query_vector, user_id, document_id, top_k))
 
     found = await ctx.step.run(
         "embed-and-search", _search, output_type=RAGSearchResult
@@ -224,8 +228,10 @@ async def healthz() -> dict[str, str]:
 
 
 @app.get("/documents/{document_id}")
-async def get_document_status(document_id: str) -> dict[str, str]:
-    document = document_statuses.get(document_id)
+async def get_document_status(
+    document_id: str, user: AuthenticatedUser = Depends(get_current_user)
+) -> dict[str, str]:
+    document = get_document(document_id, user.user_id)
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found. Please upload the PDF again.")
     return {"document_id": document_id, **document}
@@ -234,6 +240,7 @@ async def get_document_status(document_id: str) -> dict[str, str]:
 @app.post("/ingest-pdf", status_code=status.HTTP_202_ACCEPTED)
 async def start_pdf_ingestion(
     filename: str = Query(default="example.pdf", min_length=1),
+    user: AuthenticatedUser = Depends(get_current_user),
 ) -> dict[str, object]:
     """Queue a PDF ingestion workflow and return its Inngest event IDs."""
     cleaned_filename = filename.strip()
@@ -244,7 +251,8 @@ async def start_pdf_ingestion(
         )
 
     document_id = str(uuid4())
-    document_statuses[document_id] = {"filename": Path(cleaned_filename).name, "status": "queued"}
+    ensure_user(user.user_id, user.email, user.name, user.provider)
+    create_document(user.user_id, document_id, Path(cleaned_filename).name, "queued")
     event = inngest.Event(
         name="rag/ingest_pdf",
         data={
@@ -252,6 +260,7 @@ async def start_pdf_ingestion(
             "request_id": str(uuid4()),
             "document_id": document_id,
             "filename": Path(cleaned_filename).name,
+            "user_id": user.user_id,
         },
     )
 
@@ -274,7 +283,10 @@ async def start_pdf_ingestion(
 
 
 @app.post("/upload-pdf", status_code=status.HTTP_202_ACCEPTED)
-async def upload_pdf(file: UploadFile = File(...)) -> dict[str, object]:
+async def upload_pdf(
+    file: UploadFile = File(...),
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict[str, object]:
     """Persist an uploaded PDF locally and queue the existing ingestion workflow."""
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(
@@ -289,7 +301,8 @@ async def upload_pdf(file: UploadFile = File(...)) -> dict[str, object]:
     try:
         saved_path.write_bytes(await file.read())
         document_id = str(uuid4())
-        document_statuses[document_id] = {"filename": file.filename, "status": "queued"}
+        ensure_user(user.user_id, user.email, user.name, user.provider)
+        create_document(user.user_id, document_id, file.filename, "queued")
         event_ids = await inngest_client.send(
             inngest.Event(
                 name="rag/ingest_pdf",
@@ -298,6 +311,7 @@ async def upload_pdf(file: UploadFile = File(...)) -> dict[str, object]:
                     "source_id": file.filename,
                     "document_id": document_id,
                     "filename": file.filename,
+                    "user_id": user.user_id,
                 },
             )
         )
@@ -316,6 +330,51 @@ async def upload_pdf(file: UploadFile = File(...)) -> dict[str, object]:
         "status": "queued",
         "message": "PDF ingestion started",
     }
+
+
+@app.post("/query", status_code=status.HTTP_202_ACCEPTED)
+async def start_query(
+    payload: dict[str, object],
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict[str, object]:
+    question = str(payload.get("question", "")).strip()
+    document_id = str(payload.get("document_id", "")).strip()
+    if not question or not document_id:
+        raise HTTPException(status_code=422, detail="question and document_id are required.")
+    document = get_document(document_id, user.user_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found.")
+    if document.get("status") != "ready":
+        raise HTTPException(status_code=409, detail="Document is still being processed.")
+    event_ids = await inngest_client.send(
+        inngest.Event(
+            name="rag/query",
+            data={
+                "question": question,
+                "document_id": document_id,
+                "user_id": user.user_id,
+                "top_k": int(payload.get("top_k", 5)),
+                "response_style": str(payload.get("response_style", "Grounded and concise")),
+            },
+        )
+    )
+    return {"event_ids": event_ids}
+
+
+@app.get("/settings")
+async def read_user_settings(user: AuthenticatedUser = Depends(get_current_user)) -> dict[str, object]:
+    ensure_user(user.user_id, user.email, user.name, user.provider)
+    return {"settings": load_settings(user.user_id)}
+
+
+@app.put("/settings")
+async def write_user_settings(
+    settings: dict[str, object],
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> dict[str, str]:
+    ensure_user(user.user_id, user.email, user.name, user.provider)
+    save_settings(user.user_id, settings)
+    return {"status": "saved"}
 
 
 inngest.fast_api.serve(app, inngest_client, [ingest_pdf, rag_query])

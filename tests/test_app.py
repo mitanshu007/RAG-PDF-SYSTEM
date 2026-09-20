@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
+from auth import AuthenticatedUser, get_current_user
 
 
 app_module = importlib.import_module("reg.app")
@@ -10,7 +11,16 @@ app_module = importlib.import_module("reg.app")
 
 class IngestionEndpointTests(unittest.TestCase):
     def setUp(self) -> None:
+        app_module.app.dependency_overrides[get_current_user] = lambda: AuthenticatedUser(
+            user_id="00000000-0000-0000-0000-000000000001",
+            email="test@example.com",
+            name="Test User",
+            provider="test",
+        )
         self.client = TestClient(app_module.app)
+
+    def tearDown(self) -> None:
+        app_module.app.dependency_overrides.clear()
 
     def test_rejects_an_empty_filename(self) -> None:
         response = self.client.post("/ingest-pdf?filename=")
@@ -24,10 +34,10 @@ class IngestionEndpointTests(unittest.TestCase):
         self.assertEqual(response.headers["location"], "/docs")
 
     def test_returns_service_unavailable_when_event_service_fails(self) -> None:
-        with patch.object(
-            app_module.inngest_client,
-            "send",
-            AsyncMock(side_effect=ConnectionError("offline")),
+        with patch.object(app_module, "ensure_user"), patch.object(
+            app_module, "create_document"
+        ), patch.object(
+            app_module.inngest_client, "send", AsyncMock(side_effect=ConnectionError("offline"))
         ):
             response = self.client.post("/ingest-pdf?filename=test.pdf")
 
@@ -38,10 +48,10 @@ class IngestionEndpointTests(unittest.TestCase):
         )
 
     def test_upload_returns_document_identity(self) -> None:
-        with patch.object(
-            app_module.inngest_client,
-            "send",
-            AsyncMock(return_value=["event-1"]),
+        with patch.object(app_module, "ensure_user"), patch.object(
+            app_module, "create_document"
+        ), patch.object(
+            app_module.inngest_client, "send", AsyncMock(return_value=["event-1"])
         ):
             response = self.client.post(
                 "/upload-pdf",

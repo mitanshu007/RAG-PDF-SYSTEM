@@ -7,14 +7,18 @@ from pathlib import Path
 
 import streamlit as st
 
+from frontend.auth import restore_session, sign_in, sign_out
 from frontend.api import (
     ApiError,
     check_services,
     get_collection_stats,
     get_document_status,
+    get_settings,
     queue_query,
+    save_settings,
     upload_ingestion,
     wait_for_query,
+    set_access_token,
 )
 from frontend.styles import inject_styles
 
@@ -30,6 +34,23 @@ if "active_document_id" not in st.session_state:
     st.session_state.active_document_id = None
 if "pending_document_id" not in st.session_state:
     st.session_state.pending_document_id = None
+
+auth_session = restore_session()
+if auth_session is None:
+    st.markdown(
+        '<div class="card" style="max-width:560px;margin:10vh auto;text-align:center">'
+        '<div class="eyebrow">NEXA · KNOWLEDGE WORKSPACE</div>'
+        '<h1>Your private AI workspace for your documents.</h1>'
+        '<p class="hero-copy">Sign in to keep document ownership and RAG access protected.</p>',
+        unsafe_allow_html=True,
+    )
+    if st.button("Continue with Google", use_container_width=True):
+        sign_in("google")
+    if st.button("Continue with GitHub", use_container_width=True):
+        sign_in("github")
+    st.stop()
+set_access_token((auth_session or {}).get("access_token"))
+
 if "services" not in st.session_state:
     st.session_state.services = check_services()
 if "response_style" not in st.session_state:
@@ -42,7 +63,15 @@ if "chat_history_enabled" not in st.session_state:
     st.session_state.chat_history_enabled = True
 if "strict_document_mode" not in st.session_state:
     st.session_state.strict_document_mode = True
-
+if "settings_loaded" not in st.session_state:
+    try:
+        saved_settings = get_settings()
+    except ApiError:
+        saved_settings = {}
+    for key in ("response_style", "retrieval_top_k", "show_sources", "chat_history_enabled"):
+        if key in saved_settings:
+            st.session_state[key] = saved_settings[key]
+    st.session_state.settings_loaded = True
 
 def icon(name: str) -> str:
     icons = {"home":"⌂", "docs":"▣", "chat":"✦", "layers":"◈", "settings":"⚙", "plus":"＋", "search":"⌕"}
@@ -224,15 +253,19 @@ def settings_panel() -> None:
     st.markdown(
         '<div class="eyebrow">Workspace settings</div>'
         '<h1 class="hero-title"><span>Shape your workspace.</span></h1>'
-        '<p class="hero-copy">These preferences are local to this Streamlit session. '
-        'Authentication and multi-user persistence are not configured.</p>',
+        '<p class="hero-copy">These preferences are securely stored for your '
+        'authenticated Supabase account.</p>',
         unsafe_allow_html=True,
     )
 
     with st.container(border=True):
         st.markdown("### Account")
         st.markdown("**Local workspace**")
-        st.caption("No authentication provider is configured. Documents and preferences belong to this browser session.")
+        user = auth_session.get("user", {})
+        st.caption(f"{user.get('email', 'Authenticated user')} · Supabase Auth")
+        if st.button("Sign out", type="secondary"):
+            sign_out()
+            st.rerun()
         if st.button("Clear local session", type="secondary"):
             for key in ("messages", "documents", "active_document_id", "pending_document_id"):
                 st.session_state[key] = [] if key in {"messages", "documents"} else None
@@ -259,6 +292,14 @@ def settings_panel() -> None:
         st.slider("Retrieved chunks", 1, 10, key="retrieval_top_k")
         st.toggle("Show sources and evidence", key="show_sources")
         st.toggle("Keep chat history", key="chat_history_enabled")
+        if st.button("Save chat settings"):
+            save_settings({
+                "response_style": st.session_state.response_style,
+                "retrieval_top_k": st.session_state.retrieval_top_k,
+                "show_sources": st.session_state.show_sources,
+                "chat_history_enabled": st.session_state.chat_history_enabled,
+            })
+            st.success("Settings saved.")
 
     with st.container(border=True):
         st.markdown("### Knowledge and RAG")
@@ -279,7 +320,7 @@ def settings_panel() -> None:
         st.markdown("### Application status")
         for name, healthy in st.session_state.services.items():
             st.write(f"{'●' if healthy else '○'} {name}: {'Connected' if healthy else 'Unavailable'}")
-        st.caption("NEXA 0.1.0 · local session mode")
+        st.caption("NEXA 0.1.0 · Supabase authenticated workspace")
 
     with st.container(border=True):
         st.markdown("### Danger zone")
