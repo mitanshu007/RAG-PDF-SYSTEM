@@ -9,11 +9,23 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+import streamlit as st
 
-API_URL = os.getenv("RAG_API_URL", "http://localhost:8000").rstrip("/")
-INNGEST_URL = os.getenv("INNGEST_URL", "http://localhost:8288").rstrip("/")
-QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333").rstrip("/")
-EVENT_KEY = os.getenv("INNGEST_EVENT_KEY", "NO_EVENT_KEY_SET")
+
+def _setting(name: str, default: str) -> str:
+    value = os.getenv(name)
+    if value:
+        return value
+    try:
+        return str(st.secrets.get(name, default))
+    except FileNotFoundError:
+        return default
+
+
+API_URL = _setting("RAG_API_URL", "http://localhost:8000").rstrip("/")
+INNGEST_URL = _setting("INNGEST_URL", "http://localhost:8288").rstrip("/")
+QDRANT_URL = _setting("QDRANT_URL", "http://localhost:6333").rstrip("/")
+EVENT_KEY = _setting("INNGEST_EVENT_KEY", "NO_EVENT_KEY_SET")
 
 
 def set_access_token(token: str | None) -> None:

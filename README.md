@@ -428,7 +428,19 @@ Deploy `frontend/app.py` as a Streamlit Community Cloud app from the same
 repository. Set `RAG_API_URL` to the public Render URL. The frontend also
 needs the public Inngest event/query service URL and Qdrant URL if service
 status is enabled; set `INNGEST_URL` and `QDRANT_URL` in the Streamlit app
-secrets/environment. Never put provider keys in frontend settings.
+secrets/environment. Streamlit Cloud secrets can use:
+
+```toml
+RAG_API_URL = "https://<render-service-domain>"
+INNGEST_URL = "https://<inngest-cloud-domain>"
+QDRANT_URL = "https://<qdrant-cloud-domain>"
+SUPABASE_URL = "https://<project-ref>.supabase.co"
+SUPABASE_ANON_KEY = "<supabase-anon-key>"
+SUPABASE_REDIRECT_URL = "https://<streamlit-app-domain>"
+```
+
+Never put `SUPABASE_SERVICE_ROLE_KEY`, provider API keys, or OAuth client
+secrets in frontend settings.
 
 In Inngest Cloud, register the FastAPI SDK endpoint at:
 

@@ -11,9 +11,19 @@ from supabase import Client, create_client
 load_dotenv()
 
 
+def _setting(name: str, default: str = "") -> str:
+    value = os.getenv(name)
+    if value:
+        return value
+    try:
+        return str(st.secrets.get(name, default))
+    except FileNotFoundError:
+        return default
+
+
 def client() -> Client:
-    url = os.getenv("SUPABASE_URL", "").strip()
-    key = os.getenv("SUPABASE_ANON_KEY", "").strip()
+    url = _setting("SUPABASE_URL").strip()
+    key = _setting("SUPABASE_ANON_KEY").strip()
     if not url or not key:
         raise RuntimeError("Supabase authentication is not configured.")
     return create_client(url, key)
@@ -41,7 +51,7 @@ def restore_session() -> dict[str, Any] | None:
         session = client().auth.exchange_code_for_session(
             {
                 "auth_code": code,
-                "redirect_to": os.getenv(
+                "redirect_to": _setting(
                     "SUPABASE_REDIRECT_URL", "http://localhost:8501"
                 ),
             }
@@ -56,7 +66,11 @@ def sign_in(provider: str) -> None:
     response = client().auth.sign_in_with_oauth(
         {
             "provider": provider,
-            "options": {"redirect_to": os.getenv("SUPABASE_REDIRECT_URL", "http://localhost:8501")},
+            "options": {
+                "redirect_to": _setting(
+                    "SUPABASE_REDIRECT_URL", "http://localhost:8501"
+                )
+            },
         }
     )
     st.markdown(f'<meta http-equiv="refresh" content="0;url={response.url}">', unsafe_allow_html=True)
